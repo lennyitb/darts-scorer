@@ -4,3 +4,6 @@
 README.md
 compose.yaml
 LICENSE
+test
+data
+*.db

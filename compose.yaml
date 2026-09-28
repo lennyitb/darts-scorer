@@ -3,15 +3,25 @@ services:
     build: .
     image: darts-scorer:local
     restart: unless-stopped
+    init: true
     ports:
       # Loopback by default: put a reverse proxy in front for TLS. Set
       # BIND_ADDR=0.0.0.0 in .env to reach it straight from the LAN.
       - "${BIND_ADDR:-127.0.0.1}:${BIND_PORT:-8080}:8080"
+    environment:
+      # Set to 1 when the app is only reached over HTTPS and the proxy doesn't
+      # send X-Forwarded-Proto, so the sign-in cookie is marked Secure.
+      COOKIE_SECURE: ${COOKIE_SECURE:-0}
+    volumes:
+      # Games, players and accounts (SQLite). Back it up with: node server/cli.js backup
+      - darts-data:/data
     read_only: true
     tmpfs:
-      # nginx keeps its pid file and temp buffers here.
       - /tmp
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+
+volumes:
+  darts-data:

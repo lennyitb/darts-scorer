@@ -1,0 +1,17 @@
+services:
+  darts-scorer:
+    build: .
+    image: darts-scorer:local
+    restart: unless-stopped
+    ports:
+      # Loopback by default: put a reverse proxy in front for TLS. Set
+      # BIND_ADDR=0.0.0.0 in .env to reach it straight from the LAN.
+      - "${BIND_ADDR:-127.0.0.1}:${BIND_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      # nginx keeps its pid file and temp buffers here.
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

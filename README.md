@@ -65,3 +65,7 @@ The redirect matters: without the trailing slash, the browser resolves
 git pull
 docker compose up -d --build
 ```
+
+## License
+
+[MIT](LICENSE)

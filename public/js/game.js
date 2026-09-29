@@ -1,5 +1,5 @@
 /* The scorer's game state and every move that changes it, without any DOM, so
-   tests can drive it. `emit(type, ...)` reports 'say' messages and 'confetti'. */
+   tests can drive it. `emit(type, ...)` reports 'say' messages and 'confetti' ('leg' for a smaller one between legs). */
 import {IMPOSSIBLE, minDarts, evalDarts, parseDart, applyVisit, newStats} from './scoring.js';
 
 const clone=o=>JSON.parse(JSON.stringify(o));
@@ -31,7 +31,7 @@ export class Game {
     state.turn=[];
     if(c.checkout){
       state.lastCheckout={player:state.current,pts:c.pts,darts:c.darts};
-      if(p.legs>=state.config.legsToWin){state.matchWinner=state.current; this.emit('confetti');} else state.legWinner=state.current;
+      if(p.legs>=state.config.legsToWin){state.matchWinner=state.current; this.emit('confetti');} else {state.legWinner=state.current; this.emit('confetti','leg');}
       return;
     }
     state.current=(state.current+1)%state.players.length;

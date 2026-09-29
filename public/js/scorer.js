@@ -11,7 +11,7 @@ const QUICK=[0,26,41,45,60,81,85,100,140,180];
 let game=null, active=false, setupOpen=false, draft=null, buffer='', mult=1, pending=null, msg=null, msgTimer=null;
 let roster=null, rosterLoading=false, lastSent='';
 const $=id=>document.getElementById(id);
-const emit=(type,...a)=>{if(type==='say') say(...a); else if(type==='confetti') confetti();};
+const emit=(type,...a)=>{if(type==='say') say(...a); else if(type==='confetti') confetti(...a);};
 
 /* ---------- State ---------- */
 function save(){try{localStorage.setItem(LS,JSON.stringify(game));}catch(e){}}
@@ -72,18 +72,20 @@ function addDart(m,n){game.addDart(m,n); mult=1; changed();}
 
 /* ---------- Confetti ---------- */
 let confettiRun=0;
-function confetti(){
+// A match win gets the full show; a leg win a smaller, shorter one.
+function confetti(size='match'){
   if(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const cv=$('confetti'), ctx=cv.getContext('2d');
   const dpr=window.devicePixelRatio||1, W=innerWidth, H=innerHeight;
   cv.width=W*dpr; cv.height=H*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
   const cs=getComputedStyle(document.documentElement);
   const colors=[cs.getPropertyValue('--red'),cs.getPropertyValue('--green'),'#f3e6c4','#1b221e','#e8b93a'].map(c=>c.trim());
+  const leg=size==='leg', nBurst=leg?45:110, nRain=leg?0:90, dur=leg?3200:5500;
   const parts=[];
-  const burst=(x,dir)=>{for(let i=0;i<110;i++){const a=(-90+dir*(20+Math.random()*40))*Math.PI/180, v=9+Math.random()*9;
+  const burst=(x,dir)=>{for(let i=0;i<nBurst;i++){const a=(-90+dir*(20+Math.random()*40))*Math.PI/180, v=(leg?8:9)+Math.random()*(leg?6:9);
     parts.push({x,y:H+10,vx:Math.cos(a)*v,vy:Math.sin(a)*v*1.35,w:6+Math.random()*6,h:8+Math.random()*8,r:Math.random()*6,vr:(Math.random()-.5)*.35,c:colors[i%colors.length],o:1});}};
   burst(W*0.05,1); burst(W*0.95,-1);
-  setTimeout(()=>{for(let i=0;i<90;i++) parts.push({x:Math.random()*W,y:-20-Math.random()*H*.3,vx:(Math.random()-.5)*3,vy:2+Math.random()*3,w:6+Math.random()*6,h:8+Math.random()*8,r:Math.random()*6,vr:(Math.random()-.5)*.3,c:colors[i%colors.length],o:1});},350);
+  if(nRain) setTimeout(()=>{for(let i=0;i<nRain;i++) parts.push({x:Math.random()*W,y:-20-Math.random()*H*.3,vx:(Math.random()-.5)*3,vy:2+Math.random()*3,w:6+Math.random()*6,h:8+Math.random()*8,r:Math.random()*6,vr:(Math.random()-.5)*.3,c:colors[i%colors.length],o:1});},350);
   const id=++confettiRun, t0=performance.now();
   (function frame(t){
     if(id!==confettiRun) return;
@@ -91,11 +93,11 @@ function confetti(){
     const age=t-t0;
     for(const p of parts){
       p.vy+=0.28; p.vx*=0.985; p.vy=Math.min(p.vy,6+Math.abs(p.vx)); p.x+=p.vx+Math.sin((age+p.r*100)/260)*0.8; p.y+=p.vy; p.r+=p.vr;
-      if(age>3800) p.o=Math.max(0,p.o-0.02);
+      if(age>dur-1700) p.o=Math.max(0,p.o-0.02);
       ctx.save(); ctx.globalAlpha=p.o; ctx.translate(p.x,p.y); ctx.rotate(p.r); ctx.scale(1,Math.cos(p.r*2));
       ctx.fillStyle=p.c; ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h); ctx.restore();
     }
-    if(age<5500) requestAnimationFrame(frame); else ctx.clearRect(0,0,W,H);
+    if(age<dur) requestAnimationFrame(frame); else ctx.clearRect(0,0,W,H);
   })(t0);
 }
 function stopConfetti(){confettiRun++; const cv=$('confetti'); cv.getContext('2d').clearRect(0,0,cv.width,cv.height);}
@@ -323,7 +325,7 @@ function onClick(e){
     case 'endturn': game.endTurnEarly(); mult=1; changed(); break;
     case 'pbust': pendingBust(); break;
     case 'pcancel': pending=null; render(); break;
-    case 'nextleg': game.nextLeg(); changed(); break;
+    case 'nextleg': stopConfetti(); game.nextLeg(); changed(); break;
     case 'rematch': rematch(); break;
     case 'new': openSetup(); break;
     case 'addp': draft.names.push('Player '+(draft.names.length+1)); renderSetup();

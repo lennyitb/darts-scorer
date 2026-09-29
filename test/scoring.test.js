@@ -58,3 +58,14 @@ test('parseDart', ()=>{
   assert.deepEqual(parseDart('Miss'),{l:'Miss',s:0,dbl:false});
   for(const bad of ['T21','D0','0','T25','D25','x','',null,20]) assert.equal(parseDart(bad),null,String(bad));
 });
+
+test('leg wins fire a small confetti, match wins the full one',async()=>{
+  const {Game}=await import('../public/js/game.js');
+  const events=[], g=Game.create({start:101,doubleOut:false,doubleIn:false,legsToWin:2,names:['A','B']},{},(...e)=>events.push(e));
+  const win=()=>{g.confirmCheckout(g.submitTotal(101),3);};
+  win();
+  assert.deepEqual(events.filter(e=>e[0]==='confetti'),[['confetti','leg']]);
+  g.nextLeg(); g.state.current=0; win();
+  assert.equal(g.state.matchWinner,0);
+  assert.deepEqual(events.filter(e=>e[0]==='confetti'),[['confetti','leg'],['confetti']]);
+});

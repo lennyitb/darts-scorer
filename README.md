@@ -6,6 +6,8 @@ no dependencies, in an unprivileged container.
 
 - 1 to 6 players, single leg or first to 2–5 legs, with the starting player
   rotating each leg
+- Set the throwing order by dragging players by their handles in the
+  new-game sheet, or with the arrow keys on a focused handle
 - Double out and double in, each toggled on or off
 - Two ways to enter scores: type the turn total, or tap each dart
   (single/double/treble × segment)

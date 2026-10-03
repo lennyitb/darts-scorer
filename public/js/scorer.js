@@ -8,6 +8,7 @@ import {openSignIn} from './views/account.js';
 
 const LS='darts-scorer-v1';
 const QUICK=[0,26,41,45,60,81,85,100,140,180];
+const GRIP='<svg width="12" height="18" viewBox="0 0 12 18" fill="currentColor" aria-hidden="true">'+[3,9,15].map(y=>`<circle cx="3" cy="${y}" r="1.7"/><circle cx="9" cy="${y}" r="1.7"/>`).join('')+'</svg>';
 let game=null, active=false, setupOpen=false, draft=null, buffer='', mult=1, pending=null, msg=null, msgTimer=null;
 let roster=null, rosterLoading=false, lastSent='';
 const $=id=>document.getElementById(id);
@@ -232,21 +233,24 @@ function loadRoster(){
 }
 const rosterName=id=>(roster.find(p=>p.id===id)||{}).name;
 
+const grip=(i,n)=>n>1?`<button class="grip" data-grip="${i}" aria-label="Move player ${i+1}" aria-keyshortcuts="ArrowUp ArrowDown" title="Drag to reorder">${GRIP}</button>`:'';
+
 function playersField(d){
   if(!d.ranked) return `<div class="field"><span class="lbl">Players, in throwing order</span><div class="names">
-      ${d.names.map((n,i)=>`<div><input value="${esc(n)}" data-name="${i}" aria-label="Player ${i+1} name" maxlength="20">${d.names.length>1?`<button data-rm="${i}" aria-label="Remove player ${i+1}">×</button>`:''}</div>`).join('')}
+      ${d.names.map((n,i)=>`<div>${grip(i,d.names.length)}<input value="${esc(n)}" data-name="${i}" aria-label="Player ${i+1} name" maxlength="20">${d.names.length>1?`<button data-rm="${i}" aria-label="Remove player ${i+1}">×</button>`:''}</div>`).join('')}
     </div>${d.names.length<6?'<button class="add" data-act="addp">Add player</button>':''}</div>`;
   loadRoster();
   const list=(roster||[]).filter(p=>!p.hidden||d.seats.includes(p.id)).sort((a,b)=>a.name.localeCompare(b.name));
   const opts=(id,i)=>list.map(p=>`<option value="${p.id}" ${p.id===id?'selected':''} ${p.id!==id&&d.seats.includes(p.id)?'disabled':''}>${esc(p.name)}</option>`).join('');
   return `<div class="field"><span class="lbl">Players, in throwing order</span><div class="seats">
-      ${d.seats.map((id,i)=>`<div><select class="input" data-seat="${i}" aria-label="Player ${i+1}"><option value="">${roster?`Choose player ${i+1}`:'Loading players…'}</option>${opts(id,i)}</select>${d.seats.length>2?`<button data-rmseat="${i}" aria-label="Remove player ${i+1}">×</button>`:''}</div>`).join('')}
+      ${d.seats.map((id,i)=>`<div>${grip(i,d.seats.length)}<select class="input" data-seat="${i}" aria-label="Player ${i+1}"><option value="">${roster?`Choose player ${i+1}`:'Loading players…'}</option>${opts(id,i)}</select>${d.seats.length>2?`<button data-rmseat="${i}" aria-label="Remove player ${i+1}">×</button>`:''}</div>`).join('')}
     </div>${d.seats.length<6?'<button class="add" data-act="addseat">Add player</button>':''}
     <div class="newp"><input class="input" id="newPlayer" maxlength="20" placeholder="New player's name" aria-label="New player's name" value="${esc(d.newName)}"><button class="btn" data-act="createp">Add to roster</button></div>
     </div>`;
 }
 
 function renderSetup(){
+  drag=null;
   if(!draft) draft=freshDraft();
   const d=draft, acct=session.account;
   const rankedRow=session.available?`<div class="toggle"><div>Ranked<small>${acct?'Saved to history, counts toward stats and ratings':'<button class="link" data-act="signin">Sign in</button> to play ranked'}</small></div><button class="switch" role="switch" aria-checked="${d.ranked}" data-tog="ranked" aria-label="Ranked" ${acct?'':'disabled'}></button></div>`:'';
@@ -302,6 +306,32 @@ function rematch(){
   stopConfetti(); newGame(s.config,starter,ranked); render();
 }
 
+/* ---------- Drag to reorder players ---------- */
+// Rows slide with transforms while dragging; the draft is reordered and re-rendered on drop.
+let drag=null;
+function moveSeat(from,to){
+  const a=draft.ranked?draft.seats:draft.names;
+  a.splice(to,0,a.splice(from,1)[0]); draft.err=''; renderSetup();
+}
+function startDrag(e,g){
+  const row=g.parentElement, list=row.parentElement, rows=[...list.children];
+  const from=rows.indexOf(row), step=rows[1].getBoundingClientRect().top-rows[0].getBoundingClientRect().top;
+  drag={rows,row,from,to:from,step,y0:e.clientY,id:e.pointerId};
+  row.classList.add('dragging'); list.classList.add('sorting'); e.preventDefault();
+}
+function moveDrag(e){
+  if(!drag||e.pointerId!==drag.id) return;
+  const {rows,row,from,step}=drag, dy=Math.max(-from*step,Math.min((rows.length-1-from)*step,e.clientY-drag.y0));
+  const to=drag.to=Math.round(from+dy/step);
+  row.style.transform=`translateY(${dy}px)`;
+  rows.forEach((r,i)=>{if(r!==row) r.style.transform=i>from&&i<=to?`translateY(${-step}px)`:i<from&&i>=to?`translateY(${step}px)`:'';});
+}
+function endDrag(e){
+  if(!drag||e.pointerId!==drag.id) return;
+  const {from,to}=drag; drag=null;
+  if(e.type==='pointerup'&&to!==from) moveSeat(from,to); else renderSetup();
+}
+
 /* ---------- Events ---------- */
 function onClick(e){
   const b=e.target.closest('button'); if(!b||b.disabled) return;
@@ -349,7 +379,19 @@ $('setup').addEventListener('change',e=>{
   const t=e.target; if(!draft||t.dataset.seat==null) return;
   draft.seats[+t.dataset.seat]=+t.value||null; draft.err=''; renderSetup();
 });
-$('setup').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='newPlayer'){e.preventDefault(); createPlayer();}});
+$('setup').addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&e.target.id==='newPlayer'){e.preventDefault(); createPlayer();}
+  if(draft&&e.target.dataset.grip!=null&&(e.key==='ArrowUp'||e.key==='ArrowDown')){
+    e.preventDefault();
+    const i=+e.target.dataset.grip, j=i+(e.key==='ArrowUp'?-1:1);
+    if(j<0||j>=(draft.ranked?draft.seats:draft.names).length) return;
+    moveSeat(i,j); $('setup').querySelector(`[data-grip="${j}"]`).focus();
+  }
+});
+$('setup').addEventListener('pointerdown',e=>{const g=e.target.closest('[data-grip]'); if(g&&draft&&e.button===0&&!drag) startDrag(e,g);});
+addEventListener('pointermove',moveDrag);
+addEventListener('pointerup',endDrag);
+addEventListener('pointercancel',endDrag);
 document.addEventListener('keydown',e=>{
   if(!active||!game||setupOpen||dialogOpen()) return;
   if(/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;

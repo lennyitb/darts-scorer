@@ -11,6 +11,7 @@ import {HttpError, readJson} from './http.js';
 import * as auth from './auth.js';
 import {putGame, setVoid, listGames, getGame} from './games.js';
 import {leaderboard, playerStats} from './stats.js';
+import {createRemotes} from './remotes.js';
 
 const HERE=dirname(fileURLToPath(import.meta.url));
 export const PUBLIC=join(HERE,'..','public');
@@ -44,8 +45,11 @@ const cleanName=s=>typeof s==='string'?s.normalize('NFC').trim().replace(/\s+/g,
 const validName=s=>s.length>=1&&s.length<=20&&!/[\p{Cc}\p{Cf}]/u.test(s);
 const int=v=>{const n=Number(v); return Number.isSafeInteger(n)?n:null;};
 
-export function createApp({dbFile=':memory:',publicDir=PUBLIC,cookieSecure=false,limiter=new auth.LoginLimiter()}={}){
+export function createApp({dbFile=':memory:',publicDir=PUBLIC,cookieSecure=false,limiter=new auth.LoginLimiter(),
+  joinLimiter=new auth.LoginLimiter({perUser:20,global:20}),remote={}}={}){
   const db=openDb(dbFile);
+  // Its own limiter, so wrong big-screen codes can't lock anyone out of signing in.
+  const remotes=createRemotes({joinLimiter,baseHeaders:BASE_HEADERS,...remote});
   const files=loadStatic(publicDir);
   const secure=req=>cookieSecure||req.headers['x-forwarded-proto']==='https';
   const accountById=id=>db.prepare('SELECT a.*,p.name AS player_name FROM accounts a LEFT JOIN players p ON p.id=a.player_id WHERE a.id=?').get(id);
@@ -58,7 +62,8 @@ export function createApp({dbFile=':memory:',publicDir=PUBLIC,cookieSecure=false
     return id;
   }
 
-  /* ---------- Handlers: each gets {body, params, url, s (session), req} and returns JSON ---------- */
+  /* ---------- Handlers: each gets {body, params, url, s (session), req, res} and returns JSON,
+     or answers res itself (the big screen's event streams) ---------- */
   const H={
     getSession:({s})=>({account:auth.accountJson(s&&s.account)}),
 
@@ -171,6 +176,12 @@ export function createApp({dbFile=':memory:',publicDir=PUBLIC,cookieSecure=false
       });
       return {account:auth.accountJson(accountById(a.id)),...(password?{password}:{})};
     },
+
+    openRemote:({body})=>remotes.open(body),
+    joinRemote:({body})=>remotes.join(body),
+    remoteEvents:({req,res,url})=>remotes.events(req,res,url),
+    remoteSend:({body})=>remotes.send(body),
+    closeRemote:({body})=>remotes.close(body),
   };
 
   // [method, path, handler, who may call it]
@@ -192,9 +203,14 @@ export function createApp({dbFile=':memory:',publicDir=PUBLIC,cookieSecure=false
     ['GET','/api/accounts',H.listAccounts,'admin'],
     ['POST','/api/accounts',H.createAccount,'admin'],
     ['PATCH',/^\/api\/accounts\/(\d+)$/,H.updateAccount,'admin'],
+    ['POST','/api/remote',H.openRemote],
+    ['POST','/api/remote/join',H.joinRemote],
+    ['GET','/api/remote/events',H.remoteEvents],
+    ['POST','/api/remote/send',H.remoteSend],
+    ['POST','/api/remote/close',H.closeRemote],
   ];
   // Mutations still allowed while a temporary password is waiting to be changed.
-  const DURING_PW_CHANGE=new Set([H.changePassword,H.signOut]);
+  const DURING_PW_CHANGE=new Set([H.changePassword,H.signOut,H.openRemote,H.joinRemote,H.remoteSend,H.closeRemote]);
 
   // Browsers send Sec-Fetch-Site on every request; older ones and curl fall back to Origin vs Host.
   function checkOrigin(req){
@@ -225,7 +241,8 @@ export function createApp({dbFile=':memory:',publicDir=PUBLIC,cookieSecure=false
     if(who&&!s) throw new HttpError(401,'Sign in first');
     if(who==='admin'&&!s.account.is_admin) throw new HttpError(403,'Admins only');
     if(mutating&&s&&s.account.must_change_pw&&!DURING_PW_CHANGE.has(handler)) throw new HttpError(403,'Choose a new password first');
-    let out=await handler({req,url,body,s,params:m.slice(1)});
+    let out=await handler({req,res,url,body,s,params:m.slice(1)});
+    if(res.headersSent) return;
     if(!out||!('status' in out&&'body' in out)) out={status:200,body:out};
     send(res,out.status,JSON.stringify(out.body),'application/json',{...headers,...out.headers,'Cache-Control':'no-store'});
   }
@@ -261,7 +278,7 @@ export function createApp({dbFile=':memory:',publicDir=PUBLIC,cookieSecure=false
       send(res,e.status,JSON.stringify(body),'application/json',{...headers,'Cache-Control':'no-store'});
     }
   });
-  return {server,db,close(){server.closeAllConnections(); server.close(); db.close();}};
+  return {server,db,close(){remotes.shutdown(); server.closeAllConnections(); server.close(); db.close();}};
 }
 
 /* ---------- Run ---------- */

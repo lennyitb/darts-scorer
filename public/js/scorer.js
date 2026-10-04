@@ -1,13 +1,14 @@
-/* The scoreboard: rendering and input for the game in progress, plus the
-   new-game sheet. Game rules and state live in game.js. */
-import {IMPOSSIBLE, checkout} from './scoring.js';
+/* The scoreboard: rendering and input for the game in progress, the new-game
+   sheet, and big-screen mode with phones as the keypad. Game rules and state live in game.js. */
 import {Game} from './game.js';
 import {esc, dialogOpen} from './ui.js';
+import {playersHtml, padHtml, sheetHtml, entryHtml} from './board.js';
+import {openRoom, sendRoom, closeRoom, eventsUrl, Channel, Publisher, Awake} from './remote.js';
+import {qrSvg} from './qr.js';
 import {api, session, onSession, queueGame, syncStatus, onSync, flush} from './api.js';
 import {openSignIn} from './views/account.js';
 
 const LS='darts-scorer-v1';
-const QUICK=[0,26,41,45,60,81,85,100,140,180];
 const GRIP='<svg width="12" height="18" viewBox="0 0 12 18" fill="currentColor" aria-hidden="true">'+[3,9,15].map(y=>`<circle cx="3" cy="${y}" r="1.7"/><circle cx="9" cy="${y}" r="1.7"/>`).join('')+'</svg>';
 let game=null, active=false, setupOpen=false, draft=null, buffer='', mult=1, pending=null, msg=null, msgTimer=null;
 let roster=null, rosterLoading=false, lastSent='';
@@ -70,6 +71,10 @@ function submitTotal(v){buffer=''; pending=game.submitTotal(v); mult=1; changed(
 function confirmCheckout(n){const p=pending; pending=null; game.confirmCheckout(p,n); changed();}
 function pendingBust(){pending=null; game.pendingBust(); changed();}
 function addDart(m,n){game.addDart(m,n); mult=1; changed();}
+function endTurn(){game.endTurnEarly(); mult=1; changed();}
+function nextLeg(){stopConfetti(); game.nextLeg(); changed();}
+function cancelPending(){pending=null; render();}
+function setMode(m){S().mode=m; buffer=''; mult=1; save(); render();}
 
 /* ---------- Confetti ---------- */
 let confettiRun=0;
@@ -106,10 +111,8 @@ function stopConfetti(){confettiRun++; const cv=$('confetti'); cv.getContext('2d
 function say(t,kind){msg={t,kind}; clearTimeout(msgTimer); msgTimer=setTimeout(()=>{msg=null;renderMsg();},2600); renderMsg();}
 
 /* ---------- Render ---------- */
-const avg=st=>st.darts?(st.pts/st.darts*3).toFixed(1):'0.0';
-const chipClass=l=>l[0]==='T'?'t':(l[0]==='D'||l==='Bull')?'d':'';
-
-function render(){
+function render(){draw(); renderBig(); queuePublish();}
+function draw(){
   const showSetup=active&&(setupOpen||!game);
   $('setup').hidden=!showSetup; $('setup').classList.toggle('inline',!game);
   if(showSetup) renderSetup();
@@ -127,90 +130,23 @@ function renderRules(){
   $('rules').innerHTML=`<b>${parts.charAt(0).toUpperCase()+parts.slice(1)}</b>${s.ranked?syncPill():''}<br>${cfg.legsToWin>1?`First to ${cfg.legsToWin} legs, leg ${s.leg}`:'Single leg'}`;
 }
 
-function renderPlayers(){
-  const s=S(), cfg=s.config;
-  $('players').innerHTML=s.players.map((p,i)=>{
-    const active=i===s.current&&!game.over;
-    let rem=p.remaining,left=3;
-    if(active&&s.mode==='darts'&&s.turn.length){const r=game.turnEval(); if(!r.bust) rem=r.rem; left=3-s.turn.length;}
-    const co=cfg.doubleOut&&p.opened?checkout(rem,active?left:3):null;
-    const legs=cfg.legsToWin>1?`<span class="legs" aria-label="${p.legs} legs won">${Array.from({length:cfg.legsToWin},(_,k)=>`<i class="${k<p.legs?'won':''}"></i>`).join('')}</span>`:'';
-    return `<section class="player${active?' is-active':''}" ${active?'aria-current="true"':''}>
-      <div class="p-name">${esc(p.name)}${legs}${active?'<span class="throwing">to throw</span>':''}</div>
-      <div class="p-rem" aria-label="${rem} remaining">${rem}</div>
-      <div class="p-meta"><span>Avg ${avg(p.st)}</span><span>Last ${p.last==null?'–':p.last}</span>${active?`<span>Darts ${p.st.darts}</span>`:''}</div>
-      ${co?`<div class="co"><span>${active&&left<3?`With ${left} left`:'Checkout'}</span>${co.map(x=>`<b class="${chipClass(x)}">${x}</b>`).join('')}</div>`:''}
-      ${!p.opened?'<div class="note">Needs a double to start scoring</div>':''}
-    </section>`;
-  }).join('');
-}
+function renderPlayers(){const el=$('players'); el.dataset.n=S().players.length; el.innerHTML=playersHtml(game,{big:bigOn()});}
 
 function renderPad(){
-  const s=S(), pad=$('pad'), mode=s.mode, p=game.cur;
-  let h=`<div class="seg" role="group" aria-label="Entry mode">
-    <button data-mode="total" aria-pressed="${mode==='total'}" ${s.turn.length?'disabled':''}>Turn total</button>
-    <button data-mode="darts" aria-pressed="${mode==='darts'}">Dart by dart</button></div>`;
-  if(mode==='total'){
-    let leaves='',bad=false;
-    if(buffer){const v=+buffer,nr=p.remaining-v;
-      if(v>180||IMPOSSIBLE.has(v)){leaves='Not possible';bad=true;}
-      else if(nr<0||(s.config.doubleOut&&nr===1)){leaves='Bust';bad=true;}
-      else if(nr===0) leaves='Checkout';
-      else leaves=`Leaves ${nr}`;}
-    else leaves=`${esc(p.name)} on ${p.remaining}`;
-    h+=`<div class="entry"><div class="buf ${buffer?'':'empty'}" aria-live="polite">${buffer||'Enter turn score'}</div><div class="leaves ${bad?'bad':''}">${leaves}</div></div>
-    <div class="grid g5">${QUICK.map(q=>`<button class="k q" data-quick="${q}">${q===0?'None':q}</button>`).join('')}</div>
-    <div class="grid g3">${[1,2,3,4,5,6,7,8,9].map(n=>`<button class="k" data-num="${n}">${n}</button>`).join('')}
-      <button class="k undo" data-act="back" aria-label="Delete digit">⌫</button>
-      <button class="k" data-num="0">0</button>
-      <button class="k go" data-act="enter" ${buffer?'':'disabled'}>Score</button></div>
-    <div class="grid g3"><button class="k undo span3" data-act="undo">Undo last turn</button></div>
-    ${!p.opened?'<p class="hint">Enter only the points scored from the opening double onward.</p>':''}`;
-  }else{
-    const r=game.turnEval();
-    h+=`<div class="darts">${[0,1,2].map(i=>{const d=s.turn[i];return `<div class="slot ${d?'full '+chipClass(d.l):''}">${d?d.l:''}</div>`;}).join('')}
-      <div class="turn-total" aria-label="Turn total">${r&&!r.bust?r.pts:0}</div></div>
-    <div class="mods" role="group" aria-label="Multiplier">${[[1,'Single'],[2,'Double'],[3,'Treble']].map(([m,l])=>`<button data-m="${m}" aria-pressed="${mult===m}">${l}</button>`).join('')}</div>
-    <div class="grid g5">${Array.from({length:20},(_,i)=>`<button class="k" data-seg="${i+1}">${i+1}</button>`).join('')}
-      <button class="k" data-seg="25" ${mult===3?'disabled':''}>25</button>
-      <button class="k" data-seg="50" ${mult===3?'disabled':''}>Bull</button>
-      <button class="k small" data-seg="0">Miss</button>
-      <button class="k undo" data-act="undo">Undo</button>
-      <button class="k small" data-act="endturn" ${s.turn.length?'':'disabled'}>End turn</button></div>
-    ${!p.opened?'<p class="hint">Darts count once a double lands.</p>':''}`;
-  }
-  h+=`<div class="msg" id="msg" role="status" aria-live="polite"></div>`;
-  pad.innerHTML=h; renderMsg();
+  $('pad').innerHTML=padHtml(game,{buffer,mult})+'<div class="msg" id="msg" role="status" aria-live="polite"></div>';
+  renderMsg();
 }
-function renderMsg(){const el=$('msg'); if(!el) return; el.className='msg'+(msg?' '+msg.kind:''); el.textContent=msg?msg.t:'';}
+// Messages show under the pad, or in a banner on the big screen, where the pad is hidden.
+function renderMsg(){
+  for(const [id,cls] of [['msg','msg'],['banner','banner']]){
+    const el=$(id); if(!el) continue;
+    el.className=cls+(msg?' '+msg.kind:''); el.textContent=msg?msg.t:'';
+  }
+  queuePublish();
+}
 
-function statsTable(){
-  return `<div class="tablewrap"><table><thead><tr><th>Player</th><th>Legs</th><th>Avg</th><th>Best</th><th>100+</th><th>140+</th><th>180</th><th>Top out</th></tr></thead><tbody>
-  ${S().players.map(p=>`<tr><td>${esc(p.name)}</td><td>${p.legs}</td><td>${avg(p.st)}</td><td>${p.st.hi}</td><td>${p.st.t100}</td><td>${p.st.t140}</td><td>${p.st.t180}</td><td>${p.st.hiOut||'–'}</td></tr>`).join('')}
-  </tbody></table></div>`;
-}
 function renderModal(){
-  const s=S(), m=$('modal'); let h='';
-  if(pending){
-    h=`<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="mt"><h2 id="mt">Checkout on ${pending.v}?</h2>
-      <p>How many darts did it take?</p>
-      <div class="row">${[1,2,3].map(n=>`<button class="btn ${n>=pending.min?'primary':''}" data-co="${n}" ${n<pending.min?'disabled':''}>${n} dart${n>1?'s':''}</button>`).join('')}</div>
-      <div class="row">${s.config.doubleOut?'<button class="btn danger" data-act="pbust">Missed the double, bust</button>':''}<button class="btn" data-act="pcancel">Cancel</button></div></div>`;
-  }else if(s.matchWinner!=null){
-    const w=s.players[s.matchWinner], lc=s.lastCheckout;
-    h=`<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="mt"><h2 id="mt">${esc(w.name)} wins${s.config.legsToWin>1?' the match':''}</h2>
-      <p>Checked out ${lc.pts} with ${lc.darts} dart${lc.darts>1?'s':''}.</p>${statsTable()}
-      ${s.ranked?`<p class="sub" id="winSync">${winSyncText()}</p>`:''}
-      <div class="row"><button class="btn primary" data-act="rematch">Rematch, ${esc(s.players[game.loserIndex()].name)} throws first</button><button class="btn" data-act="new">New game</button></div>
-      <div class="row"><button class="btn" data-act="undo">Undo checkout</button></div></div>`;
-  }else if(s.legWinner!=null){
-    const w=s.players[s.legWinner], lc=s.lastCheckout;
-    const nextP=s.players[(s.legStarter+1)%s.players.length];
-    h=`<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="mt"><h2 id="mt">Leg ${s.leg} to ${esc(w.name)}</h2>
-      <p>Checked out ${lc.pts} with ${lc.darts} dart${lc.darts>1?'s':''}. ${esc(nextP.name)} throws first next leg.</p>${statsTable()}
-      <div class="row"><button class="btn primary" data-act="nextleg">Start leg ${s.leg+1}</button></div>
-      <div class="row"><button class="btn" data-act="undo">Undo checkout</button></div></div>`;
-  }
+  const m=$('modal'), h=sheetHtml(game,{pending,winSync:S().ranked?winSyncText():null});
   m.hidden=!h; m.innerHTML=h;
   if(h){const b=m.querySelector('.btn.primary:not([disabled])'); if(b) b.focus();}
 }
@@ -332,6 +268,184 @@ function endDrag(e){
   if(e.type==='pointerup'&&to!==from) moveSeat(from,to); else renderSetup();
 }
 
+/* ---------- Big screen ----------
+   This browser runs the game and shows it large, and phones act as its keypad (keypad.js): they
+   send commands here and render the view published back. The room is kept in sessionStorage, so
+   a reload resumes it but another tab doesn't take it over. */
+const BIG='darts-bigscreen-v1';
+const LOOPBACK=/^(localhost|127\.\d+\.\d+\.\d+|\[::1\]|0\.0\.0\.0)$/;
+const awake=new Awake();
+// big: in big-screen mode. room: {code, hostKey, key} once open. link: 'connecting', 'live', 'down' or 'moved'.
+// pairOpen: the pairing card is showing; paired: a phone has connected since this page loaded.
+let big=false, room=null, chan=null, publisher=null, phones=0, link='off', pairOpen=false, paired=false, bigKey='', retryTimer=null;
+// rev changes with anything a command could depend on, so a command sent against an older board
+// is refused instead of landing twice. Seeded from the clock so a reload never repeats one.
+let rev=Date.now(), revKey='', acks=[], pubQueued=false;
+const bigOn=()=>big&&active;
+
+function storeRoom(){try{if(big&&room) sessionStorage.setItem(BIG,JSON.stringify(room)); else sessionStorage.removeItem(BIG);}catch(e){}}
+
+// Opens a room, or reopens creds' room with the same code (after a reload or a server restart).
+async function connectRoom(creds){
+  clearTimeout(retryTimer);
+  if(chan){chan.close(); chan=null;}
+  link='connecting'; renderBig();
+  let r;
+  try{ r=await openRoom(creds); }
+  catch(e){
+    if(!big) return;
+    link='down'; renderBig();
+    retryTimer=setTimeout(()=>connectRoom(creds),5000);
+    return;
+  }
+  if(!big){closeRoom(r.code,r.hostKey).catch(()=>{}); return;}
+  if(room&&r.code!==room.code){phones=0; paired=false; pairOpen=true;}
+  room=r; storeRoom();
+  chan=new Channel(eventsUrl(r.code,r.hostKey),{onEvent:onHostEvent,
+    onStatus:st=>{if(link!=='moved'){link=st==='live'?'live':'down'; renderBig();}}});
+  renderBig();
+}
+
+function onHostEvent(m){
+  switch(m.type){
+    // The server may have restarted and lost the last view, so send it again.
+    case 'hello': phones=m.phones; if(phones){paired=true; pairOpen=false;} else if(!paired) pairOpen=true; publisher.reset(); queuePublish(); break;
+    case 'presence': if(typeof m.phones==='number'){if(m.phones&&!paired){paired=true; pairOpen=false;} phones=m.phones;} break;
+    case 'command': applyRemote(m.cmd); return;
+    case 'gone': connectRoom(room); return;
+    case 'replaced': link='moved'; if(chan){chan.close(); chan=null;} break;
+    case 'closed': exitBig(); return;
+  }
+  renderBig();
+}
+
+export function enterBig(){
+  if(big) return;
+  big=true; room=null; phones=0; paired=false; pairOpen=true;
+  publisher=new Publisher(v=>room?sendRoom(room.code,room.hostKey,{state:v}):Promise.reject(new Error('No room')));
+  connectRoom(null); render();
+}
+export function exitBig(){
+  if(!big) return;
+  big=false; clearTimeout(retryTimer);
+  if(chan){chan.close(); chan=null;}
+  if(publisher){publisher.stop(); publisher=null;}
+  if(room) closeRoom(room.code,room.hostKey).catch(()=>{});
+  room=null; phones=0; link='off'; storeRoom(); awake.release();
+  if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+  render();
+}
+// Takes the room back from another tab, picking up the game where that tab saved it.
+function takeBack(){
+  load(); pending=null; buffer=''; mult=1; stopConfetti();
+  if(game&&S().ranked) lastSent=JSON.stringify(game.log());
+  connectRoom(room); render();
+}
+// Disconnect phones: close the room and open another, with a new code and key.
+async function rotate(){
+  const old=room;
+  if(chan){chan.close(); chan=null;}
+  room=null; phones=0; paired=false; pairOpen=true; renderBig();
+  if(old) await closeRoom(old.code,old.hostKey).catch(()=>{});
+  if(big) connectRoom(null);
+}
+
+function refreshRev(){
+  const k=JSON.stringify([game&&!setupOpen?S():null,pending&&[pending.v,pending.min]]);
+  if(k!==revKey){revKey=k; rev++;}
+}
+// What phones render. acks answers the last few commands, so none is missed when two land between publishes.
+function remoteView(){
+  refreshRev();
+  const live=!!game&&!setupOpen;
+  return {rev,state:live?S():null,pending:live&&pending?{v:pending.v,min:pending.min}:null,msg,acks};
+}
+function queuePublish(){
+  if(!publisher||pubQueued) return;
+  pubQueued=true;
+  queueMicrotask(()=>{pubQueued=false; if(publisher&&room) publisher.push(remoteView());});
+}
+
+const okInt=(v,lo,hi)=>Number.isInteger(v)&&v>=lo&&v<=hi;
+// Checks a phone's command against the rules and the board, since Game trusts its input.
+// Returns the move to make, or why not.
+function checkRemote(c){
+  const s=S(), cfg=s.config;
+  switch(c.cmd){
+    case 'undo': return undo;
+    case 'cancel': return pending?cancelPending:'There is no checkout to cancel.';
+    case 'checkout': return !pending?'There is no checkout to confirm.':okInt(c.n,pending.min,3)?()=>confirmCheckout(c.n):"That checkout can't take that many darts.";
+    case 'bust': return pending&&cfg.doubleOut?pendingBust:'There is no checkout to bust.';
+  }
+  if(pending) return 'Answer the checkout question first.';
+  switch(c.cmd){
+    case 'nextleg': return s.legWinner!=null&&s.matchWinner==null?nextLeg:"The leg isn't over.";
+    case 'rematch': return s.matchWinner!=null?rematch:"The match isn't over.";
+  }
+  if(game.over) return 'The leg is over.';
+  switch(c.cmd){
+    case 'mode': return c.mode!=='total'&&c.mode!=='darts'?'Unknown entry mode.':c.mode==='total'&&s.turn.length?'Finish the turn first.':()=>setMode(c.mode);
+    case 'total': return s.mode!=='total'?'Switch to turn totals first.':okInt(c.v,0,180)?()=>submitTotal(c.v):'Scores run from 0 to 180.';
+    case 'dart': {
+      const {m,n}=c, seg=okInt(n,0,20)||n===25||n===50;
+      if(s.mode!=='darts') return 'Switch to dart by dart first.';
+      return [1,2,3].includes(m)&&seg&&!(m===3&&n>20)?()=>addDart(m,n):'Unknown dart.';
+    }
+    case 'endturn': return s.mode==='darts'&&s.turn.length?endTurn:'There are no darts to end the turn on.';
+  }
+  return 'Unknown command.';
+}
+function applyRemote(c){
+  if(!c||typeof c!=='object') return;
+  refreshRev();
+  let why=null;
+  if(c.rev!==rev) why='The board changed before that arrived. Check it and enter again.';
+  else if(!game||setupOpen) why='A new game is being set up on the big screen.';
+  else {
+    const move=checkRemote(c);
+    if(typeof move==='string') why=move;
+    // The phone's entry replaces anything half-typed here.
+    else {buffer=''; mult=1; move();}
+  }
+  if(typeof c.id==='string') acks=[...acks.slice(-7),{id:c.id.slice(0,32),ok:!why,...(why?{why}:{})}];
+  render();
+}
+
+function renderBig(){
+  const on=bigOn(), bar=$('bigbar');
+  document.body.classList.toggle('big',on);
+  bar.hidden=!on;
+  if(!on){bigKey=''; if(!big) awake.release(); return;}
+  awake.hold();
+  const key=JSON.stringify([room&&room.code,phones,link,pairOpen,!!document.fullscreenElement,location.href]);
+  if(key!==bigKey){bigKey=key; bar.innerHTML=bigbarHtml();}
+  const t=$('typing'), show=!!buffer&&!!game&&!setupOpen;
+  t.hidden=!show; t.innerHTML=show?entryHtml(game,buffer):'';
+}
+
+function bigbarHtml(){
+  const btns=`<button class="ghost" data-act="bigfull">${document.fullscreenElement?'Leave full screen':'Full screen'}</button><button class="ghost" data-act="bigexit">Exit big screen</button>`;
+  if(link==='moved') return `<div class="bigchip moved"><span class="dot"></span><span><b>This big screen moved to another tab.</b> Phones are sending scores there now.</span>
+    <span class="spacer"></span><button class="ghost" data-act="bigtake">Use this tab</button><button class="ghost" data-act="bigexit">Exit big screen</button></div>`;
+  if(!room) return `<div class="bigchip"><span class="dot"></span><span>${link==='down'?"Can't reach the server. Trying again…":'Opening the big screen…'}</span><span class="spacer"></span>${btns}</div>`;
+  const down=link==='down'?'<span class="warn-text">Reconnecting…</span>':'';
+  if(pairOpen){
+    const base=new URL('.',location.href).href, url=`${base}#/keypad/${room.code}/${room.key}`;
+    return `<div class="bigcard">
+      <div class="qrbox" data-url="${esc(url)}">${qrSvg(url)}</div>
+      <div class="pairtext">
+        <h2>Enter scores from a phone</h2>
+        <p>Scan the code with the phone's camera. Or open <b>${esc(base)}</b> on the phone, tap <b>Big screen</b>, choose <b>Use this device as a keypad</b> and enter</p>
+        <div class="code" data-code="${room.code}">${room.code}</div>
+        ${LOOPBACK.test(location.hostname)?`<p class="warn">Phones can't open <b>${esc(location.host)}</b>, because to a phone that address means the phone itself. Open this page at the address phones use, such as your public URL, and start the big screen there.</p>`:''}
+        <div class="row">${down}${phones?'<button class="btn primary" data-act="pairdone">Done</button>':''}${btns}</div>
+      </div></div>`;
+  }
+  return `<div class="bigchip"><span class="dot ${phones&&link==='live'?'live':''}"></span><span><b>${room.code}</b> · ${phones?`${phones} phone${phones>1?'s':''}`:'No phone connected'}</span>${down}
+    <span class="spacer"></span><button class="ghost" data-act="pairmore">Pair a phone</button><button class="ghost" data-act="rotate">Disconnect phones</button>${btns}</div>`;
+}
+document.addEventListener('fullscreenchange',()=>renderBig());
+
 /* ---------- Events ---------- */
 function onClick(e){
   const b=e.target.closest('button'); if(!b||b.disabled) return;
@@ -342,7 +456,7 @@ function onClick(e){
   if(ds.tog){draft[ds.tog]=!draft[ds.tog];draft.confirmAbandon=false;renderSetup();return;}
   if(ds.rm!=null){draft.names.splice(+ds.rm,1);renderSetup();return;}
   if(ds.rmseat!=null){draft.seats.splice(+ds.rmseat,1);renderSetup();return;}
-  if(ds.mode){S().mode=ds.mode;buffer='';mult=1;save();render();return;}
+  if(ds.mode){setMode(ds.mode);return;}
   if(ds.quick!=null){submitTotal(+ds.quick);return;}
   if(ds.num!=null){if(buffer.length<3){buffer=(buffer==='0'?'':buffer)+ds.num;} render();return;}
   if(ds.m){mult=mult===+ds.m?1:+ds.m;renderPad();return;}
@@ -352,10 +466,10 @@ function onClick(e){
     case 'back': buffer=buffer.slice(0,-1); render(); break;
     case 'enter': if(buffer) submitTotal(+buffer); break;
     case 'undo': undo(); break;
-    case 'endturn': game.endTurnEarly(); mult=1; changed(); break;
+    case 'endturn': endTurn(); break;
     case 'pbust': pendingBust(); break;
-    case 'pcancel': pending=null; render(); break;
-    case 'nextleg': stopConfetti(); game.nextLeg(); changed(); break;
+    case 'pcancel': cancelPending(); break;
+    case 'nextleg': nextLeg(); break;
     case 'rematch': rematch(); break;
     case 'new': openSetup(); break;
     case 'addp': draft.names.push('Player '+(draft.names.length+1)); renderSetup();
@@ -367,9 +481,15 @@ function onClick(e){
     case 'signin': openSignIn(); break;
     case 'sync': {const st=syncStatus(S().ranked.id).state;
       if(st==='auth') openSignIn(); else if(st==='rejected') say(syncStatus(S().ranked.id).msg,'bad'); else flush(); break;}
+    case 'bigexit': exitBig(); break;
+    case 'bigtake': takeBack(); break;
+    case 'bigfull': if(document.fullscreenElement) document.exitFullscreen().catch(()=>{}); else document.documentElement.requestFullscreen().catch(()=>{}); break;
+    case 'pairmore': pairOpen=true; renderBig(); break;
+    case 'pairdone': pairOpen=false; renderBig(); break;
+    case 'rotate': rotate(); break;
   }
 }
-for(const id of ['game','setup','modal']) $(id).addEventListener('click',onClick);
+for(const id of ['game','setup','modal','bigbar']) $(id).addEventListener('click',onClick);
 $('setup').addEventListener('input',e=>{
   const t=e.target; if(!draft) return;
   if(t.dataset.name!=null) draft.names[+t.dataset.name]=t.value;
@@ -410,4 +530,12 @@ document.addEventListener('keydown',e=>{
 function openSetup(){draft=null; roster=null; setupOpen=true; render();}
 export function setActive(on){if(on&&!active) roster=null; if(!on) stopConfetti(); active=on; render();}
 // Anything unsent from last time is already waiting in the outbox, so only later changes need queueing.
-export function init(){load(); if(game&&S().ranked) lastSent=JSON.stringify(game.log());}
+export function init(){
+  load(); if(game&&S().ranked) lastSent=JSON.stringify(game.log());
+  let r=null; try{r=JSON.parse(sessionStorage.getItem(BIG)||'null');}catch(e){}
+  if(r&&typeof r.code==='string'){
+    big=true; room=r;
+    publisher=new Publisher(v=>room?sendRoom(room.code,room.hostKey,{state:v}):Promise.reject(new Error('No room')));
+    connectRoom(r);
+  }
+}

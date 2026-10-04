@@ -1,5 +1,6 @@
 /* Small helpers shared by the scorer and the other views. */
-export const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+import {esc} from './board.js';
+export {esc};
 export const avg=(pts,darts)=>darts?(pts/darts*3).toFixed(1):'–';
 export const pct=(a,b)=>b?Math.round(a/b*100)+'%':'–';
 export const num=v=>v==null||v===0?'–':v;

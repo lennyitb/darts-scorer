@@ -55,7 +55,7 @@ export function entryHtml(game,buffer){
     else if(nr===0) leaves='Checkout';
     else leaves=`Leaves ${nr}`;}
   else leaves=`${esc(p.name)} on ${esc(p.remaining)}`;
-  return `<div class="entry"><div class="buf ${buffer?'':'empty'}" aria-live="polite">${buffer?esc(buffer):'Enter turn score'}</div><div class="leaves ${bad?'bad':''}">${leaves}</div></div>`;
+  return `<div class="entry"><div class="buf ${buffer?'':'idle'}" aria-live="polite">${buffer?esc(buffer):'Enter turn score'}</div><div class="leaves ${bad?'bad':''}">${leaves}</div></div>`;
 }
 
 export function padHtml(game,{buffer='',mult=1}={}){

@@ -64,7 +64,7 @@ main{display:grid;gap:14px;flex:1}
 .seg button[aria-pressed="true"]{background:var(--key);box-shadow:var(--shadow)}
 .entry{display:flex;align-items:baseline;justify-content:space-between;gap:10px;min-height:58px;padding:0 4px}
 .entry .buf{font-family:var(--cond);font-weight:700;font-size:48px;line-height:1.1;font-variant-numeric:tabular-nums}
-.entry .buf.empty{color:var(--muted);font-weight:500;font-size:22px}
+.entry .buf.idle{color:var(--muted);font-weight:500;font-size:22px;line-height:2.4}
 .entry .leaves{color:var(--muted);font-size:15px;text-align:right}
 .entry .leaves.bad{color:var(--red);font-weight:600}
 .grid{display:grid;gap:6px}
